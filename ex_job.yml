@@ -8,8 +8,6 @@ metadata:
 spec:
   template:
     spec:
-      nodeSelector:
-        nautilus.io/linstor: "true"
       tolerations:
         - key: nvidia.com/gpu
           operator: Exists
