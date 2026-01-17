@@ -105,7 +105,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-4
+          claimName: brats-data-m
       - name: shm
         emptyDir:
           medium: Memory
