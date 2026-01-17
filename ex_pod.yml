@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: midslice-5
+  name: midslice-6
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -52,36 +52,37 @@ spec:
         pip install blobfile
         pip install scikit-image
        
-        git clone -b exp https://github.com/tsereda/wavelet-brats-synthesis.git
-        cd wavelet-brats-synthesis/slice-prediction
+        # git clone -b exp https://github.com/tsereda/wavelet-brats-synthesis.git
+        # cd wavelet-brats-synthesis/slice-prediction
 
 
-        7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
-        7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
-        pip install PyWavelets
+        # 7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
+        # 7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
+        # pip install PyWavelets
 
-        python preprocess_dataset.py \
-        --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
-        --output train_triplets.csv \
-        --num_triplets 5 \
-        --seed 42
+        # python preprocess_dataset.py \
+        # --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
+        # --output train_triplets.csv \
+        # --num_triplets 5 \
+        # --seed 42
 
-        pip install PyWavelets
-        python preprocess_slices_to_tensors.py \
-          --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
-          --output_dir ./preprocessed_slices \
-          --img_size 256
+        # pip install PyWavelets
+        # python preprocess_slices_to_tensors.py \
+        #   --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
+        #   --output_dir ./preprocessed_slices \
+        #   --img_size 256
 
-        # Also extract and preprocess the validation archive (if present)
-        7z x /data/BraTS2023-GLI-MET-ValidationData.tar.gz -O.
-        7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
+        # # Also extract and preprocess the validation archive (if present)
+        # 7z x /data/BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+        cp /data/BraTS2023-GLI-MET-ValidationData.tar.gz /datam/BraTS2023-GLI-MET-ValidationData.tar.gz
+        # 7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
 
-        python preprocess_slices_to_tensors.py \
-          --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
-          --output_dir ./preprocessed_slices_val \
-          --img_size 256
+        # python preprocess_slices_to_tensors.py \
+        #   --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
+        #   --output_dir ./preprocessed_slices_val \
+        #   --img_size 256
 
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/o8bt4smj
+        # wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/o8bt4smj
 
         tail -f /dev/null
    
@@ -108,13 +109,18 @@ spec:
     volumeMounts:
     - name: data-volume
       mountPath: /data
+    - name: data-volume1
+      mountPath: /datam
     - name: shm
       mountPath: /dev/shm
  
   volumes:
   - name: data-volume
     persistentVolumeClaim:
-      claimName: brats2025-5
+      claimName: brats2025-6
+  - name: data-volume1
+    persistentVolumeClaim:
+      claimName: brats-data-m
   - name: shm
     emptyDir:
       medium: Memory
