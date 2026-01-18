@@ -34,8 +34,8 @@ spec:
             pip install scikit-image
             pip install PyWavelets
           
-            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
-            cd wavelet-brats-synthesis/slice-prediction
+            git clone https://github.com/tsereda/isbi26-slideprediction.git
+            cd isbi26-slideprediction
 
             echo "=== Extracting Training Data ==="
             7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
