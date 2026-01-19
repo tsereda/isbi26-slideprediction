@@ -21,8 +21,11 @@ def test_model_configuration(model_type, use_wavelet=False, wavelet_name='haar',
     print(f"Device: {device}")
     
     try:
-        # Create base model
-        if model_type == 'swin':
+        if model_type == 'interpolation':
+            from models.interpolation_wrapper import InterpolationWrapper
+            model = InterpolationWrapper(in_channels=8, out_channels=4).to(device)
+            print(f"✓ Interpolation model: outputs average of prev/next slices (no neural net)")
+        elif model_type == 'swin':
             from monai.networks.nets import SwinUNETR
             base_model = SwinUNETR(
                 in_channels=8,
@@ -30,7 +33,18 @@ def test_model_configuration(model_type, use_wavelet=False, wavelet_name='haar',
                 feature_size=24,
                 spatial_dims=2
             )
-            
+            if use_wavelet:
+                from models.wavelet_wrapper import WaveletWrapper
+                model = WaveletWrapper(
+                    base_model=base_model,
+                    wavelet_name=wavelet_name,
+                    in_channels=8,
+                    out_channels=4
+                ).to(device)
+                print(f"✓ Wavelet wrapper applied with {wavelet_name}")
+            else:
+                model = base_model.to(device)
+                print(f"✓ Standard spatial domain processing")
         elif model_type == 'unet':
             from monai.networks.nets import BasicUNet
             base_model = BasicUNet(
@@ -42,7 +56,18 @@ def test_model_configuration(model_type, use_wavelet=False, wavelet_name='haar',
                 norm='batch',
                 dropout=0.0
             )
-            
+            if use_wavelet:
+                from models.wavelet_wrapper import WaveletWrapper
+                model = WaveletWrapper(
+                    base_model=base_model,
+                    wavelet_name=wavelet_name,
+                    in_channels=8,
+                    out_channels=4
+                ).to(device)
+                print(f"✓ Wavelet wrapper applied with {wavelet_name}")
+            else:
+                model = base_model.to(device)
+                print(f"✓ Standard spatial domain processing")
         elif model_type == 'unetr':
             from monai.networks.nets import UNETR
             base_model = UNETR(
@@ -59,22 +84,20 @@ def test_model_configuration(model_type, use_wavelet=False, wavelet_name='haar',
                 dropout_rate=0.0,
                 spatial_dims=2
             )
+            if use_wavelet:
+                from models.wavelet_wrapper import WaveletWrapper
+                model = WaveletWrapper(
+                    base_model=base_model,
+                    wavelet_name=wavelet_name,
+                    in_channels=8,
+                    out_channels=4
+                ).to(device)
+                print(f"✓ Wavelet wrapper applied with {wavelet_name}")
+            else:
+                model = base_model.to(device)
+                print(f"✓ Standard spatial domain processing")
         else:
             raise ValueError(f"Unknown model type: {model_type}")
-        
-        # Apply wavelet wrapper if requested
-        if use_wavelet:
-            from models.wavelet_wrapper import WaveletWrapper
-            model = WaveletWrapper(
-                base_model=base_model,
-                wavelet_name=wavelet_name,
-                in_channels=8,
-                out_channels=4
-            ).to(device)
-            print(f"✓ Wavelet wrapper applied with {wavelet_name}")
-        else:
-            model = base_model.to(device)
-            print(f"✓ Standard spatial domain processing")
         
         # Create dummy input
         dummy_input = torch.randn(batch_size, 8, img_size, img_size).to(device)
@@ -164,7 +187,6 @@ def main():
         ('swin', False, None),
         ('unet', False, None),
         ('unetr', False, None),
-        
         # With wavelets
         ('swin', True, 'haar'),
         ('swin', True, 'db2'),
@@ -172,6 +194,8 @@ def main():
         ('unet', True, 'db2'),
         ('unetr', True, 'haar'),
         ('unetr', True, 'sym3'),
+        # Interpolation as a model
+        ('interpolation', False, None),
     ]
     
     results = []

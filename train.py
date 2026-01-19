@@ -647,6 +647,9 @@ def get_args():
     parser.add_argument('--model_type', type=str, default='swin', 
                        choices=['swin', 'unet', 'unetr'],
                        help='Model architecture to use')
+    parser.add_argument('--model_type', type=str, default='swin', 
+                       choices=['swin', 'unet', 'unetr', 'interpolation'],
+                       help='Model architecture to use (swin, unet, unetr, interpolation)')
     parser.add_argument('--wavelet', type=str, default='none',
                        help='Wavelet type (none, haar, db2, db4, sym3, coif2, etc.)')
     parser.add_argument('--epochs', type=int, default=50)
@@ -678,12 +681,12 @@ def get_args():
 def get_model(model_type, wavelet_name, img_size, device):
     """Load model based on type, optionally with wavelet wrapper"""
     
+    # This function will need to be updated to accept 'method' and select the correct wrapper
+    # For now, keep the original logic and add a placeholder for interpolation
     use_wavelet = wavelet_name != 'none'
     
     print("\n" + "="*60)
     print(f"INITIALIZING MODEL: {model_type.upper()}")
-    if use_wavelet:
-        print(f"WITH WAVELET PROCESSING: {wavelet_name}")
     print("="*60)
     
     # Create base model based on architecture type
@@ -695,11 +698,6 @@ def get_model(model_type, wavelet_name, img_size, device):
             spatial_dims=2
         )
         print("Base Model: Swin-UNETR")
-        print(f"Input channels: 8 (4 modalities × 2 slices)")
-        print(f"Output channels: 4 (4 modalities)")
-        print(f"Feature size: 24")
-        print(f"Spatial dims: 2D")
-    
     elif model_type == 'unet':
         base_model = BasicUNet(
             spatial_dims=2,
@@ -711,12 +709,6 @@ def get_model(model_type, wavelet_name, img_size, device):
             dropout=0.0
         )
         print("Base Model: Basic U-Net")
-        print(f"Input channels: 8 (4 modalities × 2 slices)")
-        print(f"Output channels: 4 (4 modalities)")
-        print(f"Feature progression: [32, 64, 128, 256, 512]")
-        print(f"Activation: ReLU")
-        print(f"Normalization: BatchNorm")
-    
     elif model_type == 'unetr':
         base_model = UNETR(
             in_channels=8,
@@ -733,30 +725,102 @@ def get_model(model_type, wavelet_name, img_size, device):
             spatial_dims=2
         )
         print("Base Model: UNETR (Vision Transformer + CNN decoder)")
-        print(f"Input channels: 8 (4 modalities × 2 slices)")
-        print(f"Output channels: 4 (4 modalities)")
-        print(f"Input size: {img_size}×{img_size}")
-        print(f"Hidden size: 768")
-        print(f"MLP dimension: 3072")
-        print(f"Number of heads: 12")
-        print(f"Projection type: conv")
-    
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-    
-    # Apply wavelet wrapper if requested
-    if use_wavelet:
-        from models.wavelet_wrapper import WaveletWrapper
-        model = WaveletWrapper(
+
+    if model_type == 'interpolation':
+        # Use InterpolationWrapper as the main model
+        from models.interpolation_wrapper import InterpolationWrapper
+        # Use a simple UNet as the base for interpolation
+        from monai.networks.nets import BasicUNet
+        base_model = BasicUNet(
+            spatial_dims=2,
+            in_channels=8,
+            out_channels=4,
+            features=(32, 32, 64, 128, 256, 32),
+            act='ReLU',
+            norm='batch',
+            dropout=0.0
+        )
+        model = InterpolationWrapper(
             base_model=base_model,
-            wavelet_name=wavelet_name,
             in_channels=8,
             out_channels=4
         ).to(device)
-        print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
+        print(f"\n✓ Interpolation model: InterpolationWrapper with UNet base")
+    elif model_type == 'swin':
+        base_model = SwinUNETR(
+            in_channels=8, 
+            out_channels=4, 
+            feature_size=24, 
+            spatial_dims=2
+        )
+        print("Base Model: Swin-UNETR")
+        if wavelet_name != 'none':
+            from models.wavelet_wrapper import WaveletWrapper
+            model = WaveletWrapper(
+                base_model=base_model,
+                wavelet_name=wavelet_name,
+                in_channels=8,
+                out_channels=4
+            ).to(device)
+            print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
+        else:
+            model = base_model.to(device)
+            print("\n✓ Standard spatial domain processing (no wavelet)")
+    elif model_type == 'unet':
+        base_model = BasicUNet(
+            spatial_dims=2,
+            in_channels=8,
+            out_channels=4,
+            features=(32, 32, 64, 128, 256, 32),
+            act='ReLU',
+            norm='batch',
+            dropout=0.0
+        )
+        print("Base Model: Basic U-Net")
+        if wavelet_name != 'none':
+            from models.wavelet_wrapper import WaveletWrapper
+            model = WaveletWrapper(
+                base_model=base_model,
+                wavelet_name=wavelet_name,
+                in_channels=8,
+                out_channels=4
+            ).to(device)
+            print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
+        else:
+            model = base_model.to(device)
+            print("\n✓ Standard spatial domain processing (no wavelet)")
+    elif model_type == 'unetr':
+        base_model = UNETR(
+            in_channels=8,
+            out_channels=4,
+            img_size=(img_size, img_size),
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            proj_type='conv',
+            norm_name='instance',
+            res_block=True,
+            dropout_rate=0.0,
+            spatial_dims=2
+        )
+        print("Base Model: UNETR (Vision Transformer + CNN decoder)")
+        if wavelet_name != 'none':
+            from models.wavelet_wrapper import WaveletWrapper
+            model = WaveletWrapper(
+                base_model=base_model,
+                wavelet_name=wavelet_name,
+                in_channels=8,
+                out_channels=4
+            ).to(device)
+            print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
+        else:
+            model = base_model.to(device)
+            print("\n✓ Standard spatial domain processing (no wavelet)")
     else:
-        model = base_model.to(device)
-        print("\n✓ Standard spatial domain processing (no wavelet)")
+        raise ValueError(f"Unknown model type: {model_type}")
     
     # Calculate and print model parameters
     total_params = sum(p.numel() for p in model.parameters())
