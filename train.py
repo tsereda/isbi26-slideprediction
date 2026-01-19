@@ -645,9 +645,6 @@ def get_args():
                        help='Path to BraTS2023 GLI dataset directory (optional when using --preprocessed_dir)')
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--model_type', type=str, default='swin', 
-                       choices=['swin', 'unet', 'unetr'],
-                       help='Model architecture to use')
-    parser.add_argument('--model_type', type=str, default='swin', 
                        choices=['swin', 'unet', 'unetr', 'interpolation'],
                        help='Model architecture to use (swin, unet, unetr, interpolation)')
     parser.add_argument('--wavelet', type=str, default='none',
