@@ -729,7 +729,6 @@ def get_model(model_type, wavelet_name, img_size, device):
         # Use InterpolationWrapper as the main model
         from models.interpolation_wrapper import InterpolationWrapper
         # Use a simple UNet as the base for interpolation
-        from monai.networks.nets import BasicUNet
         base_model = BasicUNet(
             spatial_dims=2,
             in_channels=8,
