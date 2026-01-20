@@ -24,6 +24,7 @@ import pandas as pd
 from train import BraTS2D5Dataset
 from preprocessed_dataset import FastTensorSliceDataset
 from monai.networks.nets import SwinUNETR
+from models.interpolation_wrapper import InterpolationWrapper
 from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
 from logging_utils import create_reconstruction_log_panel
 from typing import Optional
@@ -863,11 +864,27 @@ def load_dataset_and_dataloader(args, device):
 def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
     """Load trained model - now supports all model types from training"""
     from monai.networks.nets import UNETR, BasicUNet
-    
-    # Determine if we need wavelet wrapper (use training logic)
+
     use_wavelet = wavelet_name != 'none'
-    
-    # Create base model based on architecture type
+
+    if model_type == 'interpolation':
+        model = InterpolationWrapper(in_channels=8, out_channels=4).to(device)
+        print("Loaded InterpolationWrapper model (no neural net, just averaging)")
+        # InterpolationWrapper does not use checkpoints, but try to load if available (for compatibility)
+        if checkpoint_path is not None:
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location=device)
+                if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['state_dict'], strict=False)
+                elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                else:
+                    model.load_state_dict(checkpoint, strict=False)
+            except Exception as e:
+                print(f"Warning: Could not load checkpoint for InterpolationWrapper: {e}")
+        return model
+
+    # Standard models
     if model_type == 'swin':
         base_model = SwinUNETR(
             in_channels=8,
@@ -876,7 +893,6 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
             spatial_dims=2
         )
         print("Loaded Swin-UNETR model")
-    
     elif model_type == 'unet':
         base_model = BasicUNet(
             spatial_dims=2,
@@ -888,7 +904,6 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
             dropout=0.0
         )
         print("Loaded BasicUNet model")
-    
     elif model_type == 'unetr':
         base_model = UNETR(
             in_channels=8,
@@ -905,10 +920,9 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
             spatial_dims=2
         )
         print("Loaded UNETR model")
-    
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Supported: 'swin', 'unet', 'unetr'")
-    
+        raise ValueError(f"Unknown model type: {model_type}. Supported: 'swin', 'unet', 'unetr', 'interpolation'")
+
     # Apply wavelet wrapper if used during training
     if use_wavelet:
         from models.wavelet_wrapper import WaveletWrapper
@@ -922,7 +936,7 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
     else:
         model = base_model.to(device)
         print("Using standard spatial domain processing (no wavelet)")
-    
+
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -931,7 +945,7 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
         model.load_state_dict(checkpoint)
-    
+
     return model
 
 
@@ -963,8 +977,8 @@ def get_args():
     parser.add_argument('--img_size', type=int, default=256,
                        help='Image size')
     parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'unet', 'unetr'],
-                       help='Model architecture')
+                       choices=['swin', 'unet', 'unetr', 'interpolation'],
+                       help='Model architecture (swin, unet, unetr, interpolation)')
     parser.add_argument('--wavelet', type=str, default='none',
                        choices=['none', 'haar', 'db2'],
                        help='Wavelet type (use "none" for standard spatial domain)')
