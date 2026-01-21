@@ -687,7 +687,15 @@ def get_model(model_type, wavelet_name, img_size, device):
     print("="*60)
     
     # Create base model based on architecture type
-    if model_type == 'swin':
+    if model_type == 'interpolation':
+        # Use InterpolationWrapper as the main model (no neural network, just averaging)
+        from models.interpolation_wrapper import InterpolationWrapper
+        model = InterpolationWrapper(
+            in_channels=8,
+            out_channels=4
+        ).to(device)
+        print(f"\n✓ Interpolation model: InterpolationWrapper")
+    elif model_type == 'swin':
         base_model = SwinUNETR(
             in_channels=8, 
             out_channels=4, 
@@ -725,33 +733,7 @@ def get_model(model_type, wavelet_name, img_size, device):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    if model_type == 'interpolation':
-        # Use InterpolationWrapper as the main model
-        from models.interpolation_wrapper import InterpolationWrapper
-        # Use a simple UNet as the base for interpolation
-        base_model = BasicUNet(
-            spatial_dims=2,
-            in_channels=8,
-            out_channels=4,
-            features=(32, 32, 64, 128, 256, 32),
-            act='ReLU',
-            norm='batch',
-            dropout=0.0
-        )
-        model = InterpolationWrapper(
-            base_model=base_model,
-            in_channels=8,
-            out_channels=4
-        ).to(device)
-        print(f"\n✓ Interpolation model: InterpolationWrapper with UNet base")
-    elif model_type == 'swin':
-        base_model = SwinUNETR(
-            in_channels=8, 
-            out_channels=4, 
-            feature_size=24, 
-            spatial_dims=2
-        )
-        print("Base Model: Swin-UNETR")
+    if model_type == 'swin':
         if wavelet_name != 'none':
             from models.wavelet_wrapper import WaveletWrapper
             model = WaveletWrapper(

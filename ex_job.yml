@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-6
+  name: midslice-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -72,7 +72,7 @@ spec:
 
             echo "=== Starting WandB Sweep Agent ==="
             # Run WandB sweep agent (trials will read from ./preprocessed_slices and ./preprocessed_slices_val)
-            wandb agent timgsereda/isbi26-slideprediction/lc1dkcor
+            wandb agent timgsereda/isbi26-slideprediction/xqbezxtg
 
         env:
         - name: WANDB_API_KEY
@@ -103,7 +103,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-6
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory
