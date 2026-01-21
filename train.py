@@ -1161,282 +1161,42 @@ def measure_inference_timing(model, data_loader, device, num_batches=100):
 def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
     
-    # NEW: Smart device setup and optimizations
-    device = setup_device_and_optimizations(args)
-    
-    # Determine if using wavelet
-    use_wavelet = args.wavelet != 'none'
-    
-    # Create run name with model type and wavelet info
-    if use_wavelet:
-        run_name = f"{args.model_type}_wavelet_{args.wavelet}_{int(time())}"
-    else:
-        run_name = f"{args.model_type}_nowavelet_{int(time())}"
-    
-    # Add test mode tags to wandb config
-    wandb_config = vars(args)
-    wandb_config['device_type'] = device.type
-    wandb_tags = ['test_mode'] if args.test_mode else []
-    
-    wandb.init(project="brats-middleslice-wavelet-sweep", config=wandb_config, name=run_name, tags=wandb_tags)
-    
-    log_info(f"Using device: {device}", wandb_kv={'system/device': str(device)})
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Load dataset
-    print("\n" + "="*60)
-    print("LOADING DATASET")
-    print("="*60)
-    dataset_start = time()
-    if args.csv_index:
-        print(f"Using CSV index: {args.csv_index}")
-        dataset = SimpleCSVTripletDataset(
-            csv_path=args.csv_index,
-            image_size=(args.img_size, args.img_size),
-            spacing=(1.0, 1.0, 1.0)
-        )
-    elif args.preprocessed_dir:
-        # Fast path: load precomputed .pt slice files
-        print(f"Using preprocessed directory: {args.preprocessed_dir}")
-        try:
-            from preprocessed_dataset import FastTensorSliceDataset
-            dataset = FastTensorSliceDataset(args.preprocessed_dir)
-        except Exception as e:
-            print(f"Failed to load FastTensorSliceDataset from {args.preprocessed_dir}: {e}")
-            raise
-    else:
-        dataset = BraTS2D5Dataset(
-            data_dir=args.data_dir, 
-            image_size=(args.img_size, args.img_size),
-            spacing=(1.0, 1.0, 1.0), 
-            num_patients=args.num_patients,
-            cache_size=(args.num_workers if args.num_workers and args.num_workers > 0 else None),
-            num_workers=args.num_workers
-        )
-    dataset_time = time() - dataset_start
-    print(f"Dataset loading took {dataset_time:.2f} seconds")
-    # Extra logging for visibility in kubectl and wandb
-    try:
-        meta = {
-            'dataset/load_time_seconds': dataset_time,
-            'dataset/num_samples': len(dataset)
-        }
-        # Add cache-related info when available
-        if hasattr(dataset, 'cache_size'):
-            meta['dataset/cache_size'] = int(getattr(dataset, 'cache_size'))
-        if hasattr(dataset, 'corrupted_patients'):
-            meta['dataset/corrupted_rows'] = len(getattr(dataset, 'corrupted_patients'))
-        log_info(f"Dataset loaded: {len(dataset)} samples, cache_size={meta.get('dataset/cache_size','N/A')}", wandb_kv=meta)
-    except Exception as e:
-        log_warn(f"Failed to log dataset metadata: {e}")
-    print("="*60 + "\n")
-    
-    # DataLoader workers are controlled by CLI --num_workers. Default is 0 (safe).
-    # When increasing workers, set cache_size to match number of workers to
-    # avoid excessive cache usage.
-    pin_mem = True if torch.cuda.is_available() else False
-    persistent = (args.num_workers > 0)
-
-    # Create train and optional validation DataLoaders using explicit datasets
-    # Train dataset is the one we loaded above into `dataset`.
-    train_dataset = dataset
-    val_dataset = None
-    # If a separate validation preprocessed directory is provided, load it
-    if getattr(args, 'val_preprocessed_dir', None):
-        try:
-            from preprocessed_dataset import FastTensorSliceDataset
-            print(f"Using preprocessed validation directory: {args.val_preprocessed_dir}")
-            val_dataset = FastTensorSliceDataset(args.val_preprocessed_dir)
-        except Exception as e:
-            print(f"Failed to load FastTensorSliceDataset from {args.val_preprocessed_dir}: {e}")
-            val_dataset = None
-
-    # Update pin_memory to be CPU-friendly
-    pin_mem = device.type != 'cpu'
-    
-    data_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=pin_mem,
-        persistent_workers=persistent
-    )
-
-    if val_dataset is not None:
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=args.eval_batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_mem,
-            persistent_workers=persistent
-        )
-    else:
-        val_loader = None
-
-    # Keep `dataset` variable for backward compatibility (points to train dataset)
-    dataset = train_dataset
-
-    # Log DataLoader configuration (best-effort)
-    try:
-        dl_meta = {
-            'dataloader/batch_size': args.batch_size,
-            'dataloader/num_workers': args.num_workers,
-            'dataloader/pin_memory': pin_mem,
-            'dataloader/persistent_workers': persistent,
-            'dataset/length': len(dataset)
-        }
-        log_info(f"DataLoader created: batch_size={args.batch_size}, num_workers={args.num_workers}", wandb_kv=dl_meta)
-    except Exception as e:
-        log_warn(f"Failed to log DataLoader meta: {e}")
-
     # Load model
     model = get_model(args.model_type, args.wavelet, args.img_size, device)
     wandb.watch(model, log="all", log_freq=100)
-    
 
-    loss_function = MSELoss()
-
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-
-    print(f"\nStarting training for {args.model_type.upper()}{' with ' + args.wavelet + ' wavelet' if use_wavelet else ' (no wavelet)'}...")
-    print(f"Dataset: {len(dataset)} slices")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Learning rate: {args.lr}")
-    print(f"Epochs: {args.epochs}")
-    print(f"Timing frequency: every {args.timing_frequency} batches\n")
-    
-    best_loss = float('inf')
-    timing_stats = TimingStats()
-    
-    # Log wavelet filter visualization once at the start (for wavelet models)
-    if use_wavelet:
-        filter_fig = visualize_wavelet_filters(args.wavelet)
-        wandb.log({"wavelet_filter_kernels": wandb.Image(filter_fig)})
-        plt.close(filter_fig)
-    
-    for epoch in range(args.epochs):
-        model.train()
-        epoch_loss = 0
-        num_batches = len(data_loader)
-        epoch_start = time()
-        # Log epoch start
-        log_info(f"Starting epoch {epoch+1}/{args.epochs} - {num_batches} batches", wandb_kv={
-            'epoch/number': epoch + 1,
-            'epoch/num_batches': num_batches,
-        })
-        
-        for i, _batch in enumerate(data_loader):
-            # Use manual iterator timing: measure how long next() takes (dataset + collate)
-            if i == 0:
-                data_iter = iter(data_loader)
-
-            batch_fetch_start = perf_counter()
+    # If interpolation, skip training and run only evaluation
+    if args.model_type == 'interpolation':
+        print("\nInterpolation model selected: skipping training loop and running only evaluation.")
+        # ===== POST-TRAINING EVALUATION =====
+        if not args.skip_eval:
+            print("\n" + "="*60)
+            print("Running evaluation on interpolation model...")
+            print("="*60)
+            # Create evaluation dataloader (prefer val split when present)
+            if 'val_loader' in locals() and val_loader is not None:
+                eval_loader = val_loader
+            else:
+                eval_loader = DataLoader(
+                    dataset,
+                    batch_size=args.batch_size,
+                    shuffle=False,
+                    num_workers=args.num_workers,
+                    pin_memory=device.type != 'cpu',
+                    persistent_workers=(args.num_workers > 0)
+                )
+            # Import and run evaluation
             try:
-                batch = next(data_iter)
-            except StopIteration:
-                break
-            data_fetch_time = perf_counter() - batch_fetch_start
-            timing_stats.add_data_fetch_time(data_fetch_time)
+                from evaluate import run_evaluation
+                run_evaluation(model, eval_loader, device, args)
+            except ImportError:
+                print("Could not import evaluation function. Please check evaluate.py.")
+        else:
+            print("\nSkipping evaluation (--skip_eval flag set)")
+        wandb.finish()
+        return
 
-            # Try to read recent dataset.getitem timings (best-effort)
-            try:
-                if hasattr(dataset, 'getitem_times') and len(dataset.getitem_times) > 0:
-                    recent_n = min(128, len(dataset.getitem_times))
-                    avg_get = float(np.mean(dataset.getitem_times[-recent_n:]))
-                    timing_stats.add_dataset_getitem_time(avg_get)
-                else:
-                    avg_get = 0.0
-            except Exception:
-                avg_get = 0.0
-
-            batch_start = perf_counter()
-
-            # Unpack batch and measure transfer time to device separately
-            inputs, targets, slice_indices = batch
-            transfer_start = perf_counter()
-            inputs, targets = inputs.to(device), targets.to(device)
-            data_transfer_time = perf_counter() - transfer_start
-            timing_stats.add_data_transfer_time(data_transfer_time)
-
-            # For compatibility, record combined data_load_time (fetch + transfer)
-            timing_stats.add_data_load_time(data_fetch_time + data_transfer_time)
-            
-            # Print dimensions on first batch of first epoch
-            if epoch == 0 and i == 0:
-                # Display sample slice indices using centralized utility
-                try:
-                    preview_slices = []
-                    for idx, s in enumerate(slice_indices[:5]):
-                        slice_idx, _ = extract_patient_info(slice_indices, 0, idx)
-                        preview_slices.append(slice_idx)
-                except Exception:
-                    preview_slices = ['N/A']
-
-                print(f"\n>>> Data Dimensions:")
-                print(f"    Input: {inputs.shape} (batch, channels, height, width)")
-                print(f"    Target: {targets.shape}")
-                print(f"    Batch contains slices: {preview_slices}...\n")
-            
-            optimizer.zero_grad()
-            
-            # Forward pass with timing
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            forward_start = perf_counter()
-            
-            # Time wavelet transform if applicable
-            if use_wavelet and hasattr(model, 'dwt2d_batch') and i == 0:
-                wavelet_start = perf_counter()
-                _ = model.dwt2d_batch(inputs)
-                torch.cuda.synchronize() if device.type == 'cuda' else None
-                wavelet_time = perf_counter() - wavelet_start
-                timing_stats.add_wavelet_time(wavelet_time)
-            
-            outputs = model(inputs)
-            
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            forward_time = perf_counter() - forward_start
-            timing_stats.add_forward_time(forward_time)
-                
-            # Print wavelet dimensions on first batch if using wavelet
-            if epoch == 0 and i == 0 and use_wavelet and hasattr(model, 'dwt2d_batch'):
-                with torch.no_grad():
-                    test_wavelets = model.dwt2d_batch(inputs)
-                    print(f">>> Wavelet Transform Dimensions:")
-                    print(f"    Input: {inputs.shape} -> Wavelets: {test_wavelets.shape}")
-                    print(f"    (Each of 8 input channels becomes 4 subbands)")
-                    print(f"    Total wavelet channels: {test_wavelets.shape[1]} = 8 × 4\n")
-            
-            loss = loss_function(outputs, targets)
-            
-            # Backward pass with timing
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            backward_start = perf_counter()
-            
-            loss.backward()
-            optimizer.step()
-            
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            backward_time = perf_counter() - backward_start
-            timing_stats.add_backward_time(backward_time)
-            
-            # Total batch time
-            batch_time = perf_counter() - batch_start
-            timing_stats.add_batch_time(batch_time)
-            
-            epoch_loss += loss.item()
-            
-            # Log to W&B
-            wandb.log({
-                "batch_loss": loss.item(),
-                "learning_rate": optimizer.param_groups[0]['lr'],
-                "batch_time_ms": batch_time * 1000,
-                "forward_time_ms": forward_time * 1000,
-                "backward_time_ms": backward_time * 1000,
-                "data_fetch_time_ms": data_fetch_time * 1000,
-                "data_transfer_time_ms": data_transfer_time * 1000,
+    # ...existing code for training loop and evaluation...
                 "data_load_time_ms": (data_fetch_time + data_transfer_time) * 1000,
             })
             

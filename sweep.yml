@@ -7,9 +7,6 @@ metric:
 parameters:
   model_type:
     values:
-      - unet
-      - swin
-      - unetr
       - interpolation
   
   wavelet:
