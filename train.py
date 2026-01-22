@@ -1563,7 +1563,7 @@ def main(args):
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else {},
                 'loss': float(best_loss),
                 'config': vars(args)
             }, checkpoint_path)

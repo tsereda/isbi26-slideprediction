@@ -79,7 +79,7 @@ spec:
 
             echo "=== Starting WandB Sweep Agent ==="
             # Run WandB sweep agent (trials will read from ./preprocessed_slices and ./preprocessed_slices_val)
-            wandb agent timgsereda/isbi26-slideprediction/omu9iopu
+            wandb agent timgsereda/isbi26-slideprediction/7vqptd1t
 
         env:
         - name: WANDB_API_KEY
