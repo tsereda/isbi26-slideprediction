@@ -1306,7 +1306,13 @@ def main(args):
     loss_function = MSELoss()
 
     
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    # Only create optimizer if model has parameters
+    model_params = list(model.parameters())
+    has_params = len(model_params) > 0
+    if has_params:
+        optimizer = torch.optim.AdamW(model_params, lr=args.lr)
+    else:
+        optimizer = None
 
     print(f"\nStarting training for {args.model_type.upper()}{' with ' + args.wavelet + ' wavelet' if use_wavelet else ' (no wavelet)'}...")
     print(f"Dataset: {len(dataset)} slices")
@@ -1387,12 +1393,13 @@ def main(args):
                 print(f"    Target: {targets.shape}")
                 print(f"    Batch contains slices: {preview_slices}...\n")
             
-            optimizer.zero_grad()
-            
+            if has_params:
+                optimizer.zero_grad()
+
             # Forward pass with timing
             torch.cuda.synchronize() if device.type == 'cuda' else None
             forward_start = perf_counter()
-            
+
             # Time wavelet transform if applicable
             if use_wavelet and hasattr(model, 'dwt2d_batch') and i == 0:
                 wavelet_start = perf_counter()
@@ -1400,13 +1407,13 @@ def main(args):
                 torch.cuda.synchronize() if device.type == 'cuda' else None
                 wavelet_time = perf_counter() - wavelet_start
                 timing_stats.add_wavelet_time(wavelet_time)
-            
+
             outputs = model(inputs)
-            
+
             torch.cuda.synchronize() if device.type == 'cuda' else None
             forward_time = perf_counter() - forward_start
             timing_stats.add_forward_time(forward_time)
-                
+
             # Print wavelet dimensions on first batch if using wavelet
             if epoch == 0 and i == 0 and use_wavelet and hasattr(model, 'dwt2d_batch'):
                 with torch.no_grad():
@@ -1415,30 +1422,33 @@ def main(args):
                     print(f"    Input: {inputs.shape} -> Wavelets: {test_wavelets.shape}")
                     print(f"    (Each of 8 input channels becomes 4 subbands)")
                     print(f"    Total wavelet channels: {test_wavelets.shape[1]} = 8 × 4\n")
-            
+
             loss = loss_function(outputs, targets)
-            
-            # Backward pass with timing
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            backward_start = perf_counter()
-            
-            loss.backward()
-            optimizer.step()
-            
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            backward_time = perf_counter() - backward_start
-            timing_stats.add_backward_time(backward_time)
-            
+
+            if has_params:
+                # Backward pass with timing
+                torch.cuda.synchronize() if device.type == 'cuda' else None
+                backward_start = perf_counter()
+
+                loss.backward()
+                optimizer.step()
+
+                torch.cuda.synchronize() if device.type == 'cuda' else None
+                backward_time = perf_counter() - backward_start
+                timing_stats.add_backward_time(backward_time)
+            else:
+                backward_time = 0.0
+
             # Total batch time
             batch_time = perf_counter() - batch_start
             timing_stats.add_batch_time(batch_time)
-            
+
             epoch_loss += loss.item()
-            
+
             # Log to W&B
             wandb.log({
                 "batch_loss": loss.item(),
-                "learning_rate": optimizer.param_groups[0]['lr'],
+                "learning_rate": optimizer.param_groups[0]['lr'] if has_params else 0.0,
                 "batch_time_ms": batch_time * 1000,
                 "forward_time_ms": forward_time * 1000,
                 "backward_time_ms": backward_time * 1000,
