@@ -1172,143 +1172,29 @@ def main(args):
     device = setup_device_and_optimizations(args)
     
     # Determine if using wavelet
-    use_wavelet = args.wavelet != 'none'
-    
-    # Create run name with model type and wavelet info
-    if use_wavelet:
-        run_name = f"{args.model_type}_wavelet_{args.wavelet}_{int(time())}"
+    # Skip training loop for interpolation model
+    if args.model_type == 'interpolation':
+        print("Skipping training loop for InterpolationWrapper (no learning required)")
+        best_loss = None
+        # Optionally, run evaluation or just save a dummy checkpoint
+        # ...existing code for evaluation/checkpointing...
     else:
-        run_name = f"{args.model_type}_nowavelet_{int(time())}"
-    
-    # Add test mode tags to wandb config
-    wandb_config = vars(args)
-    wandb_config['device_type'] = device.type
-    wandb_tags = ['test_mode'] if args.test_mode else []
-    
-    wandb.init(project="brats-middleslice-wavelet-sweep", config=wandb_config, name=run_name, tags=wandb_tags)
-    
-    log_info(f"Using device: {device}", wandb_kv={'system/device': str(device)})
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Load dataset
-    print("\n" + "="*60)
-    print("LOADING DATASET")
-    print("="*60)
-    dataset_start = time()
-    if args.csv_index:
-        print(f"Using CSV index: {args.csv_index}")
-        dataset = SimpleCSVTripletDataset(
-            csv_path=args.csv_index,
-            image_size=(args.img_size, args.img_size),
-            spacing=(1.0, 1.0, 1.0)
-        )
-    elif args.preprocessed_dir:
-        # Fast path: load precomputed .pt slice files
-        print(f"Using preprocessed directory: {args.preprocessed_dir}")
-        try:
-            from preprocessed_dataset import FastTensorSliceDataset
-            dataset = FastTensorSliceDataset(args.preprocessed_dir)
-        except Exception as e:
-            print(f"Failed to load FastTensorSliceDataset from {args.preprocessed_dir}: {e}")
-            raise
-    else:
-        dataset = BraTS2D5Dataset(
-            data_dir=args.data_dir, 
-            image_size=(args.img_size, args.img_size),
-            spacing=(1.0, 1.0, 1.0), 
-            num_patients=args.num_patients,
-            cache_size=(args.num_workers if args.num_workers and args.num_workers > 0 else None),
-            num_workers=args.num_workers
-        )
-    dataset_time = time() - dataset_start
-    print(f"Dataset loading took {dataset_time:.2f} seconds")
-    # Extra logging for visibility in kubectl and wandb
-    try:
-        meta = {
-            'dataset/load_time_seconds': dataset_time,
-            'dataset/num_samples': len(dataset)
-        }
-        # Add cache-related info when available
-        if hasattr(dataset, 'cache_size'):
-            meta['dataset/cache_size'] = int(getattr(dataset, 'cache_size'))
-        if hasattr(dataset, 'corrupted_patients'):
-            meta['dataset/corrupted_rows'] = len(getattr(dataset, 'corrupted_patients'))
-        log_info(f"Dataset loaded: {len(dataset)} samples, cache_size={meta.get('dataset/cache_size','N/A')}", wandb_kv=meta)
-    except Exception as e:
-        log_warn(f"Failed to log dataset metadata: {e}")
-    print("="*60 + "\n")
-    
-    # DataLoader workers are controlled by CLI --num_workers. Default is 0 (safe).
-    # When increasing workers, set cache_size to match number of workers to
-    # avoid excessive cache usage.
-    pin_mem = True if torch.cuda.is_available() else False
-    persistent = (args.num_workers > 0)
-
-    # Create train and optional validation DataLoaders using explicit datasets
-    # Train dataset is the one we loaded above into `dataset`.
-    train_dataset = dataset
-    val_dataset = None
-    # If a separate validation preprocessed directory is provided, load it
-    if getattr(args, 'val_preprocessed_dir', None):
-        try:
-            from preprocessed_dataset import FastTensorSliceDataset
-            print(f"Using preprocessed validation directory: {args.val_preprocessed_dir}")
-            val_dataset = FastTensorSliceDataset(args.val_preprocessed_dir)
-        except Exception as e:
-            print(f"Failed to load FastTensorSliceDataset from {args.val_preprocessed_dir}: {e}")
-            val_dataset = None
-
-    # Update pin_memory to be CPU-friendly
-    pin_mem = device.type != 'cpu'
-    
-    data_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=pin_mem,
-        persistent_workers=persistent
-    )
-
-    if val_dataset is not None:
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=args.eval_batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_mem,
-            persistent_workers=persistent
-        )
-    else:
-        val_loader = None
-
-    # Keep `dataset` variable for backward compatibility (points to train dataset)
-    dataset = train_dataset
-
-    # Log DataLoader configuration (best-effort)
-    try:
-        dl_meta = {
-            'dataloader/batch_size': args.batch_size,
-            'dataloader/num_workers': args.num_workers,
-            'dataloader/pin_memory': pin_mem,
-            'dataloader/persistent_workers': persistent,
-            'dataset/length': len(dataset)
-        }
-        log_info(f"DataLoader created: batch_size={args.batch_size}, num_workers={args.num_workers}", wandb_kv=dl_meta)
-    except Exception as e:
-        log_warn(f"Failed to log DataLoader meta: {e}")
-
-    # Load model
-    model = get_model(args.model_type, args.wavelet, args.img_size, device)
-    wandb.watch(model, log="all", log_freq=100)
-    
-
-    loss_function = MSELoss()
-
-    
-    # Only create optimizer if model has parameters
-    model_params = list(model.parameters())
-    has_params = len(model_params) > 0
+        for epoch in range(args.epochs):
+            model.train()
+            epoch_loss = 0
+            num_batches = len(data_loader)
+            epoch_start = time()
+            # Log epoch start
+            log_info(f"Starting epoch {epoch+1}/{args.epochs} - {num_batches} batches", wandb_kv={
+                'epoch/number': epoch + 1,
+                'epoch/num_batches': num_batches,
+            })
+            
+            for i, _batch in enumerate(data_loader):
+                # ...existing code...
+                pass
+            # ...existing code...
+            pass
     if has_params:
         optimizer = torch.optim.AdamW(model_params, lr=args.lr)
     else:
@@ -1687,21 +1573,22 @@ def main(args):
     print("MEASURING INFERENCE TIMING")
     print("="*60)
     
-    # Reload best checkpoint for inference timing
-    if use_wavelet:
-        checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
-    else:
-        checkpoint_name = f"{args.model_type}_baseline_best.pth"
-    checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
-    
-    print(f"Loading best checkpoint from {checkpoint_path}...")
-    log_info(f"Loading best checkpoint from {checkpoint_path}...", wandb_kv={'checkpoint/load_path': checkpoint_path})
-    try:
-        checkpoint = torch.load(checkpoint_path)
-    except Exception as e:
-        log_warn(f"Failed to load checkpoint {checkpoint_path}: {e}")
-        raise
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # Skip checkpoint loading for interpolation model
+    if args.model_type != 'interpolation':
+        # Reload best checkpoint for inference timing
+        if use_wavelet:
+            checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
+        else:
+            checkpoint_name = f"{args.model_type}_baseline_best.pth"
+        checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+        print(f"Loading best checkpoint from {checkpoint_path}...")
+        log_info(f"Loading best checkpoint from {checkpoint_path}...", wandb_kv={'checkpoint/load_path': checkpoint_path})
+        try:
+            checkpoint = torch.load(checkpoint_path)
+        except Exception as e:
+            log_warn(f"Failed to load checkpoint {checkpoint_path}: {e}")
+            raise
+        model.load_state_dict(checkpoint['model_state_dict'])
     
     # Create inference dataloader (prefer validation split when present)
     if 'val_loader' in locals() and val_loader is not None:
