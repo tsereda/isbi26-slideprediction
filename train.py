@@ -1170,15 +1170,21 @@ def main(args):
     
     # NEW: Smart device setup and optimizations
     device = setup_device_and_optimizations(args)
-    
+
     # Determine if using wavelet
-    # Skip training loop for interpolation model
+    # Define has_params before usage
+    has_params = False
     if args.model_type == 'interpolation':
         print("Skipping training loop for InterpolationWrapper (no learning required)")
         best_loss = None
         # Optionally, run evaluation or just save a dummy checkpoint
         # ...existing code for evaluation/checkpointing...
     else:
+        # Try to determine if model has parameters
+        try:
+            has_params = any(p.requires_grad for p in model.parameters())
+        except Exception:
+            has_params = False
         for epoch in range(args.epochs):
             model.train()
             epoch_loss = 0
