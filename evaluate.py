@@ -821,6 +821,9 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
         for img_path in sorted(wavelet_viz_dir.glob('*target_wavelets*.png'))[:6]:
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
 
+    # Add missing return statement
+    return results, all_metrics
+
 
 def load_dataset_and_dataloader(args, device):
     """Helper function to load dataset and create dataloader.

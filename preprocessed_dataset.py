@@ -67,12 +67,12 @@ class FastTensorSliceDataset(Dataset):
                     # Treat missing keys as a file error and skip it
                     raise KeyError(f"Sample {path} missing 'input' or 'target' keys")
 
-                # Return (input, target, (slice_idx, patient_id)) tuple for compatibility
+                # Return (input, target, slice_idx, patient_id) for compatibility
                 slice_idx = sample.get('slice_idx', -1)
                 patient_id = sample.get('patient', f'unknown_{current_idx}')
                 
                 # Ensure float32 tensors
-                return input_t.float(), target_t.float(), (slice_idx, patient_id)
+                return input_t.float(), target_t.float(), slice_idx, patient_id
 
             except Exception as e:
                 # Log the error and move to the next index
