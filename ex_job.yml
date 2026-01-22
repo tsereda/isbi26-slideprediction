@@ -56,11 +56,17 @@ spec:
             echo "=== Preprocessing Validation Data ==="
             python preprocess_slices_to_tensors.py \
               --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
+              --output_dir ./preprocessed_slices \
+              --img_size 256 \
+              --triplets_per_patient 1 \
+              --seed 42 
+
+            python preprocess_slices_to_tensors.py \
+              --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
               --output_dir ./preprocessed_slices_val \
               --img_size 256 \
               --triplets_per_patient 5 \
-              --seed 42 \
-              --skip_eval False
+              --seed 42 
 
             echo "=== Checking Preprocessed Data ==="
             # echo "Training data:"
@@ -73,7 +79,7 @@ spec:
 
             echo "=== Starting WandB Sweep Agent ==="
             # Run WandB sweep agent (trials will read from ./preprocessed_slices and ./preprocessed_slices_val)
-            wandb agent timgsereda/isbi26-slideprediction/vng8wicn
+            wandb agent timgsereda/isbi26-slideprediction/omu9iopu
 
         env:
         - name: WANDB_API_KEY

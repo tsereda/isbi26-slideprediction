@@ -695,6 +695,13 @@ def get_model(model_type, wavelet_name, img_size, device):
             out_channels=4
         ).to(device)
         print(f"\n✓ Interpolation model: InterpolationWrapper")
+        # Return early to avoid falling through to else block
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"\nModel Parameters:")
+        print(f"  Total: {total_params:,}")
+        print(f"  Trainable: {trainable_params:,}")
+        return model
     elif model_type == 'swin':
         base_model = SwinUNETR(
             in_channels=8, 
