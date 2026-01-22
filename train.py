@@ -687,22 +687,7 @@ def get_model(model_type, wavelet_name, img_size, device):
     print("="*60)
     
     # Create base model based on architecture type
-    if model_type == 'interpolation':
-        # Use InterpolationWrapper as the main model (no neural network, just averaging)
-        from models.interpolation_wrapper import InterpolationWrapper
-        model = InterpolationWrapper(
-            in_channels=8,
-            out_channels=4
-        ).to(device)
-        print(f"\n✓ Interpolation model: InterpolationWrapper")
-        # Return early to avoid falling through to else block
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"\nModel Parameters:")
-        print(f"  Total: {total_params:,}")
-        print(f"  Trainable: {trainable_params:,}")
-        return model
-    elif model_type == 'swin':
+    if model_type == 'swin':
         base_model = SwinUNETR(
             in_channels=8, 
             out_channels=4, 
@@ -1168,43 +1153,80 @@ def measure_inference_timing(model, data_loader, device, num_batches=100):
 def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
     
-    # NEW: Smart device setup and optimizations
+    # ===== SPECIAL CASE: INTERPOLATION BASELINE =====
+    if args.model_type == 'interpolation':
+        print("\n" + "="*60)
+        print("INTERPOLATION BASELINE - NO TRAINING NEEDED")
+        print("="*60)
+        print("This baseline simply averages the previous and next slices.")
+        print("Skipping training and running evaluation only.\n")
+        
+        device = setup_device_and_optimizations(args)
+        
+        wandb.init(
+            project=os.getenv('WANDB_PROJECT', 'brats-middleslice-wavelet-sweep'),
+            name=f"eval_interpolation_baseline",
+            config=vars(args),
+            tags=['evaluation', 'interpolation', 'baseline']
+        )
+        
+        from models.interpolation_wrapper import InterpolationWrapper
+        model = InterpolationWrapper(in_channels=8, out_channels=4).to(device)
+        
+        if args.val_preprocessed_dir:
+            from preprocessed_dataset import FastTensorSliceDataset
+            eval_dataset = FastTensorSliceDataset(args.val_preprocessed_dir)
+        elif args.preprocessed_dir:
+            from preprocessed_dataset import FastTensorSliceDataset
+            eval_dataset = FastTensorSliceDataset(args.preprocessed_dir)
+        else:
+            raise ValueError("Must provide --preprocessed_dir or --val_preprocessed_dir")
+        
+        eval_loader = DataLoader(
+            eval_dataset, batch_size=args.eval_batch_size,
+            shuffle=False, num_workers=args.num_workers,
+            pin_memory=device.type != 'cpu'
+        )
+        
+        from evaluate import run_evaluation
+        results, _ = run_evaluation(
+            model=model, data_loader=eval_loader, device=device,
+            output_dir="./results/interpolation_baseline",
+            model_type='interpolation', wavelet_name='N/A',
+            save_wavelets=False
+        )
+        
+        print("\n" + "="*60)
+        print("INTERPOLATION BASELINE RESULTS")
+        print("="*60)
+        print(f"MSE:  {results['mse_mean']:.6f} ± {results['mse_std']:.6f}")
+        print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
+        print(f"Samples evaluated: {results['num_samples']}")
+        print("="*60)
+        
+        wandb.finish()
+        return  # EXIT!
+    
+    # ===== NORMAL TRAINING FOR ALL OTHER MODELS =====
     device = setup_device_and_optimizations(args)
 
-    # Determine if using wavelet
-    # Define has_params before usage
-    has_params = False
-    if args.model_type == 'interpolation':
-        print("Skipping training loop for InterpolationWrapper (no learning required)")
-        best_loss = None
-        # Optionally, run evaluation or just save a dummy checkpoint
-        # ...existing code for evaluation/checkpointing...
-    else:
-        # Try to determine if model has parameters
-        try:
-            has_params = any(p.requires_grad for p in model.parameters())
-        except Exception:
-            has_params = False
-        for epoch in range(args.epochs):
-            model.train()
-            epoch_loss = 0
-            num_batches = len(data_loader)
-            epoch_start = time()
-            # Log epoch start
-            log_info(f"Starting epoch {epoch+1}/{args.epochs} - {num_batches} batches", wandb_kv={
-                'epoch/number': epoch + 1,
-                'epoch/num_batches': num_batches,
-            })
-            
-            for i, _batch in enumerate(data_loader):
-                # ...existing code...
-                pass
+    loss_function = MSELoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    for epoch in range(args.epochs):
+        model.train()
+        epoch_loss = 0
+        num_batches = len(data_loader)
+        epoch_start = time()
+        # Log epoch start
+        log_info(f"Starting epoch {epoch+1}/{args.epochs} - {num_batches} batches", wandb_kv={
+            'epoch/number': epoch + 1,
+            'epoch/num_batches': num_batches,
+        })
+        for i, _batch in enumerate(data_loader):
             # ...existing code...
             pass
-    if has_params:
-        optimizer = torch.optim.AdamW(model_params, lr=args.lr)
-    else:
-        optimizer = None
+        # ...existing code...
+        pass
 
     print(f"\nStarting training for {args.model_type.upper()}{' with ' + args.wavelet + ' wavelet' if use_wavelet else ' (no wavelet)'}...")
     print(f"Dataset: {len(dataset)} slices")
@@ -1285,8 +1307,7 @@ def main(args):
                 print(f"    Target: {targets.shape}")
                 print(f"    Batch contains slices: {preview_slices}...\n")
             
-            if has_params:
-                optimizer.zero_grad()
+            optimizer.zero_grad()
 
             # Forward pass with timing
             torch.cuda.synchronize() if device.type == 'cuda' else None
@@ -1317,19 +1338,16 @@ def main(args):
 
             loss = loss_function(outputs, targets)
 
-            if has_params:
-                # Backward pass with timing
-                torch.cuda.synchronize() if device.type == 'cuda' else None
-                backward_start = perf_counter()
+            # Backward pass with timing
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            backward_start = perf_counter()
 
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
 
-                torch.cuda.synchronize() if device.type == 'cuda' else None
-                backward_time = perf_counter() - backward_start
-                timing_stats.add_backward_time(backward_time)
-            else:
-                backward_time = 0.0
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            backward_time = perf_counter() - backward_start
+            timing_stats.add_backward_time(backward_time)
 
             # Total batch time
             batch_time = perf_counter() - batch_start
@@ -1340,7 +1358,7 @@ def main(args):
             # Log to W&B
             wandb.log({
                 "batch_loss": loss.item(),
-                "learning_rate": optimizer.param_groups[0]['lr'] if has_params else 0.0,
+                "learning_rate": optimizer.param_groups[0]['lr'],
                 "batch_time_ms": batch_time * 1000,
                 "forward_time_ms": forward_time * 1000,
                 "backward_time_ms": backward_time * 1000,
@@ -1579,22 +1597,20 @@ def main(args):
     print("MEASURING INFERENCE TIMING")
     print("="*60)
     
-    # Skip checkpoint loading for interpolation model
-    if args.model_type != 'interpolation':
-        # Reload best checkpoint for inference timing
-        if use_wavelet:
-            checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
-        else:
-            checkpoint_name = f"{args.model_type}_baseline_best.pth"
-        checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
-        print(f"Loading best checkpoint from {checkpoint_path}...")
-        log_info(f"Loading best checkpoint from {checkpoint_path}...", wandb_kv={'checkpoint/load_path': checkpoint_path})
-        try:
-            checkpoint = torch.load(checkpoint_path)
-        except Exception as e:
-            log_warn(f"Failed to load checkpoint {checkpoint_path}: {e}")
-            raise
-        model.load_state_dict(checkpoint['model_state_dict'])
+    # Reload best checkpoint for inference timing
+    if use_wavelet:
+        checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
+    else:
+        checkpoint_name = f"{args.model_type}_baseline_best.pth"
+    checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+    print(f"Loading best checkpoint from {checkpoint_path}...")
+    log_info(f"Loading best checkpoint from {checkpoint_path}...", wandb_kv={'checkpoint/load_path': checkpoint_path})
+    try:
+        checkpoint = torch.load(checkpoint_path)
+    except Exception as e:
+        log_warn(f"Failed to load checkpoint {checkpoint_path}: {e}")
+        raise
+    model.load_state_dict(checkpoint['model_state_dict'])
     
     # Create inference dataloader (prefer validation split when present)
     if 'val_loader' in locals() and val_loader is not None:
