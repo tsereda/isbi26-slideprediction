@@ -361,7 +361,14 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             # Time data loading (approximate)
             data_start = perf_counter()
             
-            inputs, targets, slice_indices = batch_data
+            # Handle both 3-value (old format) and 4-value (new format) returns
+            if len(batch_data) == 4:
+                inputs, targets, slice_indices, patient_ids = batch_data
+            elif len(batch_data) == 3:
+                inputs, targets, slice_indices = batch_data
+                patient_ids = None
+            else:
+                raise ValueError(f"Unexpected batch format: {len(batch_data)} values")
             inputs = inputs.to(device)
             targets = targets.to(device)
             
@@ -431,8 +438,12 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             for i in range(batch_size):
                 metrics = calculate_metrics(outputs[i], targets[i])
                 
-                # Extract slice index and patient ID using centralized utility
-                slice_idx, patient_id = extract_patient_info(slice_indices, batch_idx, i)
+                # Extract slice index and patient ID
+                if patient_ids is not None:
+                    slice_idx = int(slice_indices[i]) if hasattr(slice_indices, '__iter__') else int(slice_indices)
+                    patient_id = patient_ids[i]
+                else:
+                    slice_idx, patient_id = extract_patient_info(slice_indices, batch_idx, i)
                 
                 metrics['slice_idx'] = slice_idx
                 metrics['patient_id'] = patient_id
