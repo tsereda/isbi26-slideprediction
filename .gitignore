@@ -1,3 +1,4 @@
 figures
 analysis
 wandb
+__pycache__/
