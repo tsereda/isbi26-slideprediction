@@ -190,27 +190,39 @@ def process_single_patient_optimized(args_tuple):
             margin=triplet_margin
         )
         
+        # Extract segmentation label volume if available
+        seg_volume = None
+        if 'label' in processed:
+            seg_volume = processed['label']
+
         # Save slices (same logic as original)
         output_files = []
         for z in selected_slices:
             mid_slice = img_modalities[:, :, :, z]
             prev_slice = img_modalities[:, :, :, z - 1]
             next_slice = img_modalities[:, :, :, z + 1]
-            
+
             # Create tensors (same as original)
             input_tensor = torch.cat([prev_slice, next_slice], dim=0).contiguous()
             target_tensor = mid_slice.contiguous()
-            
-            # Save file (same as original)
+
+            save_dict = {
+                'input': input_tensor,
+                'target': target_tensor,
+                'patient': patient_name,
+                'slice_idx': int(z)
+            }
+
+            # Save segmentation mask for the middle slice if available
+            if seg_volume is not None and z < seg_volume.shape[3]:
+                seg_slice = seg_volume[:, :, :, z].contiguous()
+                save_dict['seg'] = seg_slice
+
+            # Save file
             fname = f"{patient_name}_slice_{z:04d}.pt"
             out_path = Path(output_dir) / fname
-            torch.save({
-                'input': input_tensor, 
-                'target': target_tensor, 
-                'patient': patient_name, 
-                'slice_idx': int(z)
-            }, str(out_path))
-            
+            torch.save(save_dict, str(out_path))
+
             output_files.append((str(out_path), patient_name, int(z)))
         
         # OPTIMIZATION: Clean up memory immediately

@@ -7,29 +7,33 @@ metric:
 parameters:
   model_type:
     values:
+      - swin
+      - unet
+      - unetr
       - interpolation
-  
+      - interpolation_cubic
+
   wavelet:
     values:
       - none
       - haar
       - db2
-  
+
   preprocessed_dir:
     value: "./preprocessed_slices"
 
   val_preprocessed_dir:
     value: "./preprocessed_slices_val"
-  
+
   epochs:
     value: 100
-  
+
   batch_size:
     value: 8
-  
+
   lr:
     value: 0.0001
-  
+
   img_size:
     value: 256
 
