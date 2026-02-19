@@ -276,29 +276,115 @@ def calculate_ssim_pytorch(img1, img2, window_size=11, data_range=1.0):
     return ssim_map.mean(dim=(1, 2))
 
 
-def calculate_metrics(prediction, ground_truth):
+def _compute_tumor_region_masks(seg):
+    """Derive whole tumor (WT), tumor core (TC), and enhancing tumor (ET) masks.
+
+    BraTS 2023 label convention:
+        1 = necrotic core (NCR)
+        2 = peritumoral edema (ED)
+        3 = enhancing tumor (ET)
+
+    Args:
+        seg: torch.Tensor [1, H, W] - segmentation mask (integer labels).
+
+    Returns:
+        dict mapping region name to boolean mask [H, W].
     """
-    Calculate MSE and SSIM between prediction and ground truth
-    OPTIMIZED: Uses fast GPU-accelerated PyTorch SSIM (200x faster than scikit-image)
-    FIXED: Updated to BraTS2023 GLI naming (t1n, t1c, t2w, t2f)
-    
+    s = seg.squeeze(0)  # [H, W]
+    return {
+        'wt': (s > 0),           # whole tumor = NCR + ED + ET
+        'tc': (s == 1) | (s == 3),  # tumor core = NCR + ET
+        'et': (s == 3),          # enhancing tumor = ET only
+    }
+
+
+def _masked_mse(prediction, ground_truth, mask):
+    """MSE computed only within a binary mask region.
+
+    Args:
+        prediction, ground_truth: [C, H, W]
+        mask: [H, W] bool
+
+    Returns:
+        float or None if mask has no True pixels.
+    """
+    if mask.sum() == 0:
+        return None
+    mask_expanded = mask.unsqueeze(0)  # [1, H, W]
+    diff_sq = (prediction - ground_truth) ** 2
+    return float((diff_sq * mask_expanded).sum() / (mask_expanded.sum() * prediction.shape[0]))
+
+
+def _masked_ssim(prediction, ground_truth, mask, window_size=11, data_range=1.0):
+    """SSIM computed only within a binary mask region.
+
+    Uses the full SSIM map and averages over masked pixels.
+
+    Args:
+        prediction, ground_truth: [C, H, W]
+        mask: [H, W] bool
+
+    Returns:
+        float or None if mask has insufficient pixels.
+    """
+    C, H, W = prediction.shape
+    if mask.sum() < window_size * window_size:
+        return None
+
+    device = prediction.device
+    K1, K2 = 0.01, 0.03
+    C1 = (K1 * data_range) ** 2
+    C2 = (K2 * data_range) ** 2
+
+    sigma = 1.5
+    coords = torch.arange(window_size, device=device, dtype=torch.float32) - window_size // 2
+    gauss_1d = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    gauss_1d = gauss_1d / gauss_1d.sum()
+    window_2d = gauss_1d[:, None] * gauss_1d[None, :]
+    window = window_2d.expand(C, 1, window_size, window_size).contiguous()
+
+    pad = window_size // 2
+    img1 = ground_truth
+    img2 = prediction
+
+    mu1 = torch.nn.functional.conv2d(img1.unsqueeze(0), window, padding=pad, groups=C).squeeze(0)
+    mu2 = torch.nn.functional.conv2d(img2.unsqueeze(0), window, padding=pad, groups=C).squeeze(0)
+    mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+
+    sigma1_sq = torch.nn.functional.conv2d(img1.unsqueeze(0) ** 2, window, padding=pad, groups=C).squeeze(0) - mu1_sq
+    sigma2_sq = torch.nn.functional.conv2d(img2.unsqueeze(0) ** 2, window, padding=pad, groups=C).squeeze(0) - mu2_sq
+    sigma12 = torch.nn.functional.conv2d((img1 * img2).unsqueeze(0), window, padding=pad, groups=C).squeeze(0) - mu1_mu2
+
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+
+    # Average SSIM over masked pixels (across all channels)
+    mask_expanded = mask.unsqueeze(0).float()  # [1, H, W]
+    return float((ssim_map * mask_expanded).sum() / (mask_expanded.sum() * C))
+
+
+def calculate_metrics(prediction, ground_truth, seg=None):
+    """
+    Calculate MSE and SSIM between prediction and ground truth.
+    Optionally computes tumor-region-focused metrics when seg is provided.
+
     Args:
         prediction: torch.Tensor [4, H, W] - predicted middle slice
         ground_truth: torch.Tensor [4, H, W] - real middle slice
-    
+        seg: torch.Tensor [1, H, W] or None - segmentation mask for tumor-region analysis
+
     Returns:
-        dict with 'mse' and 'ssim' keys
+        dict with global and optionally tumor-region-specific metrics
     """
     # Calculate MSE (keep on GPU, no CPU transfer needed)
     mse_per_modality = torch.mean((prediction - ground_truth) ** 2, dim=(1, 2))
     mse_avg = torch.mean(mse_per_modality)
-    
+
     # Calculate SSIM using fast PyTorch implementation (all 4 modalities vectorized)
     ssim_scores = calculate_ssim_pytorch(ground_truth, prediction, window_size=11, data_range=1.0)
     ssim_avg = torch.mean(ssim_scores)
-    
+
     # Convert to Python scalars for logging
-    return {
+    results = {
         'mse': float(mse_avg),
         'ssim': float(ssim_avg),
         'mse_t1n': float(mse_per_modality[0]),
@@ -310,6 +396,18 @@ def calculate_metrics(prediction, ground_truth):
         'ssim_t2w': float(ssim_scores[2]),
         'ssim_t2f': float(ssim_scores[3]),
     }
+
+    # Tumor-region-focused metrics when segmentation mask is available
+    if seg is not None:
+        region_masks = _compute_tumor_region_masks(seg)
+        for region_name, mask in region_masks.items():
+            mse_val = _masked_mse(prediction, ground_truth, mask)
+            ssim_val = _masked_ssim(prediction, ground_truth, mask)
+            results[f'mse_{region_name}'] = mse_val if mse_val is not None else float('nan')
+            results[f'ssim_{region_name}'] = ssim_val if ssim_val is not None else float('nan')
+            results[f'{region_name}_pixels'] = int(mask.sum())
+
+    return results
 
 
 def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
@@ -361,16 +459,24 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             # Time data loading (approximate)
             data_start = perf_counter()
             
-            # Handle both 3-value (old format) and 4-value (new format) returns
-            if len(batch_data) == 4:
+            # Handle variable-length batch returns:
+            # 3-value: (input, target, slice_indices)
+            # 4-value: (input, target, slice_indices, patient_ids)
+            # 5-value: (input, target, seg, slice_indices, patient_ids)
+            seg_masks = None
+            patient_ids = None
+            if len(batch_data) == 5:
+                inputs, targets, seg_masks, slice_indices, patient_ids = batch_data
+            elif len(batch_data) == 4:
                 inputs, targets, slice_indices, patient_ids = batch_data
             elif len(batch_data) == 3:
                 inputs, targets, slice_indices = batch_data
-                patient_ids = None
             else:
                 raise ValueError(f"Unexpected batch format: {len(batch_data)} values")
             inputs = inputs.to(device)
             targets = targets.to(device)
+            if seg_masks is not None:
+                seg_masks = seg_masks.to(device)
             
             data_time = perf_counter() - data_start
             timing_stats.add_data_load_time(data_time)
@@ -436,7 +542,8 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             # Calculate metrics for each sample in batch
             batch_size = inputs.shape[0]
             for i in range(batch_size):
-                metrics = calculate_metrics(outputs[i], targets[i])
+                seg_i = seg_masks[i] if seg_masks is not None else None
+                metrics = calculate_metrics(outputs[i], targets[i], seg=seg_i)
                 
                 # Extract slice index and patient ID
                 if patient_ids is not None:
@@ -468,6 +575,11 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     patient_id=patient_id,
                     batch_idx=batch_idx
                 )
+
+                # Save segmentation mask for downstream evaluation
+                if seg_masks is not None:
+                    seg_path = patient_dir / 'seg_middle_slice.npy'
+                    np.save(seg_path, seg_masks[i].cpu().numpy())
                 
                 # Create reconstruction panel for this sample
                 panel = create_reconstruction_log_panel(
@@ -675,7 +787,7 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
         'num_samples': len(all_metrics)
     }
     
-    # Per-modality stats - FIXED naming
+    # Per-modality stats
     for mod in ['t1n', 't1c', 't2w', 't2f']:
         mse_mod = [m[f'mse_{mod}'] for m in all_metrics]
         ssim_mod = [m[f'ssim_{mod}'] for m in all_metrics]
@@ -683,14 +795,32 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
         results[f'mse_{mod}_std'] = np.std(mse_mod)
         results[f'ssim_{mod}_mean'] = np.mean(ssim_mod)
         results[f'ssim_{mod}_std'] = np.std(ssim_mod)
-    
+
+    # Tumor-region-focused stats (when segmentation masks were available)
+    for region in ['wt', 'tc', 'et']:
+        mse_key = f'mse_{region}'
+        ssim_key = f'ssim_{region}'
+        pixels_key = f'{region}_pixels'
+
+        mse_vals = [m[mse_key] for m in all_metrics if mse_key in m and not np.isnan(m[mse_key])]
+        ssim_vals = [m[ssim_key] for m in all_metrics if ssim_key in m and not np.isnan(m[ssim_key])]
+        pixel_counts = [m[pixels_key] for m in all_metrics if pixels_key in m]
+
+        if mse_vals:
+            results[f'mse_{region}_mean'] = np.mean(mse_vals)
+            results[f'mse_{region}_std'] = np.std(mse_vals)
+            results[f'ssim_{region}_mean'] = np.mean(ssim_vals) if ssim_vals else float('nan')
+            results[f'ssim_{region}_std'] = np.std(ssim_vals) if ssim_vals else float('nan')
+            results[f'{region}_samples_with_region'] = len(mse_vals)
+            results[f'{region}_avg_pixels'] = np.mean(pixel_counts) if pixel_counts else 0
+
     # Add timing results to the evaluation results
     results.update({
         'eval_time_seconds': final_timing['total_forward_time_s'],
         'eval_throughput_samples_per_sec': final_timing['samples_per_second'],
         'avg_forward_time_ms': final_timing['avg_forward_time_ms'],
     })
-    
+
     return results, all_metrics
 
 
@@ -720,25 +850,42 @@ def save_results(results, all_metrics, output_dir):
 
 
 def print_results(results):
-    """Print evaluation results to console - FIXED naming"""
+    """Print evaluation results to console"""
     print("\n" + "="*50)
     print("EVALUATION RESULTS")
     print("="*50)
-    print(f"MSE:  {results['mse_mean']:.6f} ± {results['mse_std']:.6f}")
-    print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
+    print(f"MSE:  {results['mse_mean']:.6f} +/- {results['mse_std']:.6f}")
+    print(f"SSIM: {results['ssim_mean']:.4f} +/- {results['ssim_std']:.4f}")
     print(f"Samples evaluated: {results['num_samples']}")
     print(f"Evaluation time: {results.get('eval_time_seconds', 0):.1f} seconds")
     print(f"Throughput: {results.get('eval_throughput_samples_per_sec', 0):.1f} samples/sec")
     print("\nPer-modality MSE:")
-    print(f"  T1n:   {results['mse_t1n_mean']:.6f} ± {results['mse_t1n_std']:.6f}")
-    print(f"  T1c:   {results['mse_t1c_mean']:.6f} ± {results['mse_t1c_std']:.6f}")
-    print(f"  T2w:   {results['mse_t2w_mean']:.6f} ± {results['mse_t2w_std']:.6f}")
-    print(f"  T2f:   {results['mse_t2f_mean']:.6f} ± {results['mse_t2f_std']:.6f}")
+    print(f"  T1n:   {results['mse_t1n_mean']:.6f} +/- {results['mse_t1n_std']:.6f}")
+    print(f"  T1c:   {results['mse_t1c_mean']:.6f} +/- {results['mse_t1c_std']:.6f}")
+    print(f"  T2w:   {results['mse_t2w_mean']:.6f} +/- {results['mse_t2w_std']:.6f}")
+    print(f"  T2f:   {results['mse_t2f_mean']:.6f} +/- {results['mse_t2f_std']:.6f}")
     print("\nPer-modality SSIM:")
-    print(f"  T1n:   {results['ssim_t1n_mean']:.4f} ± {results['ssim_t1n_std']:.4f}")
-    print(f"  T1c:   {results['ssim_t1c_mean']:.4f} ± {results['ssim_t1c_std']:.4f}")
-    print(f"  T2w:   {results['ssim_t2w_mean']:.4f} ± {results['ssim_t2w_std']:.4f}")
-    print(f"  T2f:   {results['ssim_t2f_mean']:.4f} ± {results['ssim_t2f_std']:.4f}")
+    print(f"  T1n:   {results['ssim_t1n_mean']:.4f} +/- {results['ssim_t1n_std']:.4f}")
+    print(f"  T1c:   {results['ssim_t1c_mean']:.4f} +/- {results['ssim_t1c_std']:.4f}")
+    print(f"  T2w:   {results['ssim_t2w_mean']:.4f} +/- {results['ssim_t2w_std']:.4f}")
+    print(f"  T2f:   {results['ssim_t2f_mean']:.4f} +/- {results['ssim_t2f_std']:.4f}")
+
+    # Tumor-region-focused metrics
+    region_names = {'wt': 'Whole Tumor', 'tc': 'Tumor Core', 'et': 'Enhancing Tumor'}
+    has_tumor_metrics = any(f'mse_{r}_mean' in results for r in region_names)
+    if has_tumor_metrics:
+        print("\nTumor-Region-Focused Metrics:")
+        for key, label in region_names.items():
+            if f'mse_{key}_mean' in results:
+                n = results.get(f'{key}_samples_with_region', 0)
+                print(f"  {label} (n={n}):")
+                print(f"    MSE:  {results[f'mse_{key}_mean']:.6f} +/- {results[f'mse_{key}_std']:.6f}")
+                ssim_mean = results.get(f'ssim_{key}_mean', float('nan'))
+                ssim_std = results.get(f'ssim_{key}_std', float('nan'))
+                if not np.isnan(ssim_mean):
+                    print(f"    SSIM: {ssim_mean:.4f} +/- {ssim_std:.4f}")
+                else:
+                    print(f"    SSIM: N/A (insufficient region pixels)")
     print("="*50)
 
 
@@ -763,15 +910,15 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
     # Run evaluation
     results, all_metrics = evaluate_model(model, data_loader, device, output_dir, save_wavelets)
     
-    # Log comprehensive results to wandb - FIXED naming
-    wandb.log({
+    # Log comprehensive results to wandb
+    wandb_log = {
         # Overall metrics
         "eval/mse_mean": results['mse_mean'],
         "eval/mse_std": results['mse_std'],
         "eval/ssim_mean": results['ssim_mean'],
         "eval/ssim_std": results['ssim_std'],
         "eval/num_samples": results['num_samples'],
-        
+
         # Per-modality MSE
         "eval/mse_t1n_mean": results['mse_t1n_mean'],
         "eval/mse_t1n_std": results['mse_t1n_std'],
@@ -781,7 +928,7 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
         "eval/mse_t2w_std": results['mse_t2w_std'],
         "eval/mse_t2f_mean": results['mse_t2f_mean'],
         "eval/mse_t2f_std": results['mse_t2f_std'],
-        
+
         # Per-modality SSIM
         "eval/ssim_t1n_mean": results['ssim_t1n_mean'],
         "eval/ssim_t1n_std": results['ssim_t1n_std'],
@@ -791,7 +938,19 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
         "eval/ssim_t2w_std": results['ssim_t2w_std'],
         "eval/ssim_t2f_mean": results['ssim_t2f_mean'],
         "eval/ssim_t2f_std": results['ssim_t2f_std'],
-    })
+    }
+
+    # Add tumor-region-focused metrics if available
+    for region in ['wt', 'tc', 'et']:
+        if f'mse_{region}_mean' in results:
+            wandb_log[f"eval/mse_{region}_mean"] = results[f'mse_{region}_mean']
+            wandb_log[f"eval/mse_{region}_std"] = results[f'mse_{region}_std']
+            if not np.isnan(results.get(f'ssim_{region}_mean', float('nan'))):
+                wandb_log[f"eval/ssim_{region}_mean"] = results[f'ssim_{region}_mean']
+                wandb_log[f"eval/ssim_{region}_std"] = results[f'ssim_{region}_std']
+            wandb_log[f"eval/{region}_samples"] = results.get(f'{region}_samples_with_region', 0)
+
+    wandb.log(wandb_log)
     
     # Create per-modality comparison chart - FIXED naming
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -881,9 +1040,10 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
 
     use_wavelet = wavelet_name != 'none'
 
-    if model_type == 'interpolation':
-        model = InterpolationWrapper(in_channels=8, out_channels=4).to(device)
-        print("Loaded InterpolationWrapper model (no neural net, just averaging)")
+    if model_type in ('interpolation', 'interpolation_cubic'):
+        interp_method = 'cubic' if model_type == 'interpolation_cubic' else 'linear'
+        model = InterpolationWrapper(in_channels=8, out_channels=4, method=interp_method).to(device)
+        print(f"Loaded InterpolationWrapper model ({interp_method} interpolation)")
         # InterpolationWrapper does not use checkpoints, but try to load if available (for compatibility)
         if checkpoint_path is not None:
             try:
@@ -935,7 +1095,7 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
         )
         print("Loaded UNETR model")
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Supported: 'swin', 'unet', 'unetr', 'interpolation'")
+        raise ValueError(f"Unknown model type: {model_type}. Supported: 'swin', 'unet', 'unetr', 'interpolation', 'interpolation_cubic'")
 
     # Apply wavelet wrapper if used during training
     if use_wavelet:
@@ -991,8 +1151,8 @@ def get_args():
     parser.add_argument('--img_size', type=int, default=256,
                        help='Image size')
     parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'unet', 'unetr', 'interpolation'],
-                       help='Model architecture (swin, unet, unetr, interpolation)')
+                       choices=['swin', 'unet', 'unetr', 'interpolation', 'interpolation_cubic'],
+                       help='Model architecture (swin, unet, unetr, interpolation, interpolation_cubic)')
     parser.add_argument('--wavelet', type=str, default='none',
                        choices=['none', 'haar', 'db2'],
                        help='Wavelet type (use "none" for standard spatial domain)')

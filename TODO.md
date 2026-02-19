@@ -2,53 +2,53 @@
 
 ## Current Status
 - [x] Swin-UNETR baseline working
-- [x] Dataset loader working (256×256 slices)
+- [x] Basic U-Net model
+- [x] UNETR model
+- [x] Wavelet wrapper (haar, db2) for all architectures
+- [x] Dataset loader working (256x256 slices)
 - [x] Training loop with W&B logging
 - [x] Qualitative visualization working
+- [x] Evaluation with MSE/SSIM (global + per-modality)
+- [x] Tumor-region-focused evaluation (MSE/SSIM within WT, TC, ET)
+- [x] Linear interpolation baseline
+- [x] Cubic interpolation baseline
+- [x] Downstream segmentation evaluation (Dice for WT, TC, ET)
+- [x] Preprocessor saves segmentation masks for downstream eval
 
-## Immediate Tasks (This Week)
+## Model Configurations (Grid Search)
 
-### 1. Add Wavelet Diffusion Models
-- [ ] Create `models/` directory
-- [ ] Implement `models/wavelet_diffusion_haar.py`
-- [ ] Implement `models/wavelet_diffusion_db2.py`
-- [ ] Test wavelet transform (2D DWT) on sample slice
-- [ ] Integrate with training script
+| Model Type | Wavelet | Training Required |
+|------------|---------|-------------------|
+| swin       | none    | Yes               |
+| swin       | haar    | Yes               |
+| swin       | db2     | Yes               |
+| unet       | none    | Yes               |
+| unet       | haar    | Yes               |
+| unet       | db2     | Yes               |
+| unetr      | none    | Yes               |
+| unetr      | haar    | Yes               |
+| unetr      | db2     | Yes               |
+| interpolation       | N/A | No (eval only) |
+| interpolation_cubic  | N/A | No (eval only) |
 
-### 2. Train Core Models
-- [ ] Swin-UNETR baseline (already working, just save best checkpoint)
-- [ ] Fast-cWDM-Haar (~3-4 hours)
-- [ ] Fast-cWDM-db2 (~3-4 hours)
+## Remaining Tasks
 
-### 3. Evaluation Scripts
-- [ ] Create `evaluate.py` to calculate MSE and SSIM
-- [ ] Run evaluation on all model predictions
-- [ ] Save metrics to CSV files
-
-### 4. Generate Paper Figure
-- [ ] Create `generate_figure2.py`
-- [ ] Select 1-2 best examples (clear tumor, low MSE)
-- [ ] Generate comparison: [Z-1][Z+1][Swin][Haar][db2][GT][Error]
-- [ ] Export as high-res PDF
-
-## Later (For Final Paper)
-
-### Additional Baselines
-- [ ] Fast-DDPM (no wavelets) - optional comparison
-- [ ] Direct L2 regression baseline - quick sanity check
+### Training
+- [ ] Train all 9 learning-based model configurations
+- [ ] Evaluate interpolation baselines (linear + cubic)
 
 ### Downstream Segmentation
-- [ ] Get/train Swin-UNETR segmentation model
-- [ ] Run segmentation on reconstructed volumes
-- [ ] Calculate Dice scores (WT, TC, ET)
+- [ ] Obtain/train nnU-Net segmentation model for BraTS 2023
+- [ ] Run `evaluate_segmentation.py` on all model predictions
+- [ ] Report Dice scores (WT, TC, ET) in paper
 
-### Efficiency Metrics
-- [ ] Measure inference time (average over 100 samples)
-- [ ] Measure GPU memory usage during inference
-- [ ] Create timing comparison table
+### Paper Figure Generation
+- [ ] Select 1-2 best examples (clear tumor, low MSE)
+- [ ] Generate comparison figure: [Z-1][Z+1][UNet][Swin][UNETR][Wavelet][GT][Error]
+- [ ] Export as high-res PDF
 
 ### Paper Writing
-- [ ] Write Methods section 2.3 (2D slice reconstruction)
+- [ ] Write Methods section (spatial + wavelet domain modeling)
 - [ ] Write Results section with tables
 - [ ] Generate Figure 1 (method diagram)
 - [ ] Update abstract with final numbers
@@ -56,46 +56,27 @@
 ## File Organization
 
 ```
-middleslice-prediction/
-├── train.py              ✓ Working
-├── transforms.py         ✓ Working
-├── logging_utils.py      ✓ Working
-├── evaluate.py           ⚠️ Need to create
-├── generate_figure2.py   ⚠️ Need to create
+isbi26-slideprediction/
+├── train.py                         - Main training script
+├── evaluate.py                      - MSE/SSIM evaluation (global + tumor-region)
+├── evaluate_segmentation.py         - Downstream segmentation Dice evaluation
+├── preprocess_slices_to_tensors.py  - Data preprocessing (saves seg masks)
+├── preprocessed_dataset.py          - Fast tensor dataset loader
+├── transforms.py                    - MONAI preprocessing pipeline
+├── utils.py                         - Utility functions
+├── logging_utils.py                 - W&B logging utilities
+├── generate_figure2.py              - Paper figure generation
 ├── models/
 │   ├── __init__.py
-│   ├── wavelet_diffusion_haar.py  ⚠️ Need to create
-│   └── wavelet_diffusion_db2.py   ⚠️ Need to create
-├── results/
-│   ├── swin/
-│   │   ├── predictions/
-│   │   └── metrics.csv
-│   ├── haar/
-│   │   ├── predictions/
-│   │   └── metrics.csv
-│   └── db2/
-│       ├── predictions/
-│       └── metrics.csv
-└── checkpoints/
-    ├── swin_best.pth
-    ├── haar_best.pth
-    └── db2_best.pth
+│   ├── wavelet_diffusion.py         - Standalone wavelet U-Net (Fast-cWDM)
+│   ├── wavelet_wrapper.py           - Wavelet wrapper for any base model
+│   └── interpolation_wrapper.py     - Linear + cubic interpolation baselines
+├── sweep.yml                        - W&B hyperparameter sweep config
+└── requirements.txt                 - Python dependencies
 ```
 
-## Expected Results
-
-### Target Metrics (Rough Estimates)
-- **Swin-UNETR:** MSE ~2.5-3.0, SSIM ~0.93-0.94
-- **Fast-cWDM-Haar:** MSE ~2.2-2.5, SSIM ~0.94-0.95
-- **Fast-cWDM-db2:** MSE ~2.0-2.3, SSIM ~0.94-0.96 (should be best)
-
-### Timeline
-- **Week 1:** Implement wavelet models, train all 3 models
-- **Week 2:** Evaluation, figure generation, start writing
-- **Week 3:** Add baselines if needed, polish paper
-
 ## Notes
-- Keep image size at 256×256 for all models (fair comparison)
-- Use MSE as primary metric (already implemented in loss)
-- SSIM can be calculated post-hoc from predictions
-- Focus on getting Haar and db2 working first, Swin is baseline
+- Image size: 256x256 for all models (fair comparison)
+- Primary metrics: MSE, SSIM (global + per-modality + tumor-region)
+- Downstream: Dice scores via segmentation model
+- BraTS 2023 labels: 1=NCR, 2=ED, 3=ET; WT={1,2,3}, TC={1,3}, ET={3}

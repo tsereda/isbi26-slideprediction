@@ -644,9 +644,9 @@ def get_args():
     parser.add_argument('--data_dir', type=str, required=False, default=None,
                        help='Path to BraTS2023 GLI dataset directory (optional when using --preprocessed_dir)')
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
-    parser.add_argument('--model_type', type=str, default='swin', 
-                       choices=['swin', 'unet', 'unetr', 'interpolation'],
-                       help='Model architecture to use (swin, unet, unetr, interpolation)')
+    parser.add_argument('--model_type', type=str, default='swin',
+                       choices=['swin', 'unet', 'unetr', 'interpolation', 'interpolation_cubic'],
+                       help='Model architecture to use (swin, unet, unetr, interpolation, interpolation_cubic)')
     parser.add_argument('--wavelet', type=str, default='none',
                        help='Wavelet type (none, haar, db2, db4, sym3, coif2, etc.)')
     parser.add_argument('--epochs', type=int, default=50)
@@ -676,22 +676,22 @@ def get_args():
 
 
 def get_model(model_type, wavelet_name, img_size, device):
-    """Load model based on type, optionally with wavelet wrapper"""
-    
-    # This function will need to be updated to accept 'method' and select the correct wrapper
-    # For now, keep the original logic and add a placeholder for interpolation
+    """Load model based on type, optionally with wavelet wrapper.
+
+    Supports: swin, unet, unetr (each optionally wrapped with a wavelet transform).
+    """
     use_wavelet = wavelet_name != 'none'
-    
+
     print("\n" + "="*60)
     print(f"INITIALIZING MODEL: {model_type.upper()}")
     print("="*60)
-    
+
     # Create base model based on architecture type
     if model_type == 'swin':
         base_model = SwinUNETR(
-            in_channels=8, 
-            out_channels=4, 
-            feature_size=24, 
+            in_channels=8,
+            out_channels=4,
+            feature_size=24,
             spatial_dims=2
         )
         print("Base Model: Swin-UNETR")
@@ -725,73 +725,20 @@ def get_model(model_type, wavelet_name, img_size, device):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    if model_type == 'swin':
-        if wavelet_name != 'none':
-            from models.wavelet_wrapper import WaveletWrapper
-            model = WaveletWrapper(
-                base_model=base_model,
-                wavelet_name=wavelet_name,
-                in_channels=8,
-                out_channels=4
-            ).to(device)
-            print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
-        else:
-            model = base_model.to(device)
-            print("\n✓ Standard spatial domain processing (no wavelet)")
-    elif model_type == 'unet':
-        base_model = BasicUNet(
-            spatial_dims=2,
+    # Optionally wrap the base model with wavelet processing
+    if use_wavelet:
+        from models.wavelet_wrapper import WaveletWrapper
+        model = WaveletWrapper(
+            base_model=base_model,
+            wavelet_name=wavelet_name,
             in_channels=8,
-            out_channels=4,
-            features=(32, 32, 64, 128, 256, 32),
-            act='ReLU',
-            norm='batch',
-            dropout=0.0
-        )
-        print("Base Model: Basic U-Net")
-        if wavelet_name != 'none':
-            from models.wavelet_wrapper import WaveletWrapper
-            model = WaveletWrapper(
-                base_model=base_model,
-                wavelet_name=wavelet_name,
-                in_channels=8,
-                out_channels=4
-            ).to(device)
-            print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
-        else:
-            model = base_model.to(device)
-            print("\n✓ Standard spatial domain processing (no wavelet)")
-    elif model_type == 'unetr':
-        base_model = UNETR(
-            in_channels=8,
-            out_channels=4,
-            img_size=(img_size, img_size),
-            feature_size=16,
-            hidden_size=768,
-            mlp_dim=3072,
-            num_heads=12,
-            proj_type='conv',
-            norm_name='instance',
-            res_block=True,
-            dropout_rate=0.0,
-            spatial_dims=2
-        )
-        print("Base Model: UNETR (Vision Transformer + CNN decoder)")
-        if wavelet_name != 'none':
-            from models.wavelet_wrapper import WaveletWrapper
-            model = WaveletWrapper(
-                base_model=base_model,
-                wavelet_name=wavelet_name,
-                in_channels=8,
-                out_channels=4
-            ).to(device)
-            print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
-        else:
-            model = base_model.to(device)
-            print("\n✓ Standard spatial domain processing (no wavelet)")
+            out_channels=4
+        ).to(device)
+        print(f"\nWavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
-    
+        model = base_model.to(device)
+        print("\nStandard spatial domain processing (no wavelet)")
+
     # Calculate and print model parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -799,7 +746,7 @@ def get_model(model_type, wavelet_name, img_size, device):
     print(f"  Total: {total_params:,}")
     print(f"  Trainable: {trainable_params:,}")
     print("="*60 + "\n")
-    
+
     return model
 
 
@@ -1154,24 +1101,25 @@ def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
     
     # ===== SPECIAL CASE: INTERPOLATION BASELINE =====
-    if args.model_type == 'interpolation':
+    if args.model_type in ('interpolation', 'interpolation_cubic'):
+        interp_method = 'cubic' if args.model_type == 'interpolation_cubic' else 'linear'
         print("\n" + "="*60)
-        print("INTERPOLATION BASELINE - NO TRAINING NEEDED")
+        print(f"INTERPOLATION BASELINE ({interp_method.upper()}) - NO TRAINING NEEDED")
         print("="*60)
-        print("This baseline simply averages the previous and next slices.")
+        print(f"This baseline uses {interp_method} interpolation between adjacent slices.")
         print("Skipping training and running evaluation only.\n")
-        
+
         device = setup_device_and_optimizations(args)
-        
+
         wandb.init(
             project=os.getenv('WANDB_PROJECT', 'brats-middleslice-wavelet-sweep'),
-            name=f"eval_interpolation_baseline",
+            name=f"eval_interpolation_{interp_method}_baseline",
             config=vars(args),
-            tags=['evaluation', 'interpolation', 'baseline']
+            tags=['evaluation', 'interpolation', interp_method, 'baseline']
         )
-        
+
         from models.interpolation_wrapper import InterpolationWrapper
-        model = InterpolationWrapper(in_channels=8, out_channels=4).to(device)
+        model = InterpolationWrapper(in_channels=8, out_channels=4, method=interp_method).to(device)
         
         if args.val_preprocessed_dir:
             from preprocessed_dataset import FastTensorSliceDataset
@@ -1191,13 +1139,13 @@ def main(args):
         from evaluate import run_evaluation
         results, _ = run_evaluation(
             model=model, data_loader=eval_loader, device=device,
-            output_dir="./results/interpolation_baseline",
-            model_type='interpolation', wavelet_name='N/A',
+            output_dir=f"./results/interpolation_{interp_method}_baseline",
+            model_type=args.model_type, wavelet_name='N/A',
             save_wavelets=False
         )
-        
+
         print("\n" + "="*60)
-        print("INTERPOLATION BASELINE RESULTS")
+        print(f"INTERPOLATION ({interp_method.upper()}) BASELINE RESULTS")
         print("="*60)
         print(f"MSE:  {results['mse_mean']:.6f} ± {results['mse_std']:.6f}")
         print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
@@ -1210,23 +1158,65 @@ def main(args):
     # ===== NORMAL TRAINING FOR ALL OTHER MODELS =====
     device = setup_device_and_optimizations(args)
 
+    use_wavelet = args.wavelet != 'none'
+
+    # ----- Dataset Setup -----
+    if args.preprocessed_dir:
+        from preprocessed_dataset import FastTensorSliceDataset
+        print(f"Loading preprocessed training dataset from: {args.preprocessed_dir}")
+        dataset = FastTensorSliceDataset(args.preprocessed_dir)
+    elif args.data_dir:
+        dataset = BraTS2D5Dataset(
+            data_dir=args.data_dir,
+            image_size=(args.img_size, args.img_size),
+            spacing=(1.0, 1.0, 1.0),
+            num_patients=args.num_patients,
+            num_workers=args.num_workers,
+        )
+    else:
+        raise ValueError("Must provide either --preprocessed_dir or --data_dir for training.")
+
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=device.type != 'cpu',
+        persistent_workers=(args.num_workers > 0),
+    )
+
+    # Optional validation dataset
+    val_loader = None
+    if args.val_preprocessed_dir:
+        from preprocessed_dataset import FastTensorSliceDataset
+        val_dataset = FastTensorSliceDataset(args.val_preprocessed_dir)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.eval_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=device.type != 'cpu',
+            persistent_workers=(args.num_workers > 0),
+        )
+        print(f"Loaded validation dataset: {len(val_dataset)} samples")
+
+    print(f"Training dataset: {len(dataset)} samples")
+
+    # ----- Model Setup -----
+    model = get_model(args.model_type, args.wavelet, args.img_size, device)
+
+    # ----- W&B Init -----
+    run_name = f"{args.model_type}_{'wavelet_' + args.wavelet if use_wavelet else 'baseline'}"
+    os.makedirs(args.output_dir, exist_ok=True)
+    wandb.init(
+        project=os.getenv('WANDB_PROJECT', 'brats-middleslice-wavelet-sweep'),
+        name=run_name,
+        config=vars(args),
+    )
+
+    # ----- Training Setup -----
     loss_function = MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    for epoch in range(args.epochs):
-        model.train()
-        epoch_loss = 0
-        num_batches = len(data_loader)
-        epoch_start = time()
-        # Log epoch start
-        log_info(f"Starting epoch {epoch+1}/{args.epochs} - {num_batches} batches", wandb_kv={
-            'epoch/number': epoch + 1,
-            'epoch/num_batches': num_batches,
-        })
-        for i, _batch in enumerate(data_loader):
-            # ...existing code...
-            pass
-        # ...existing code...
-        pass
 
     print(f"\nStarting training for {args.model_type.upper()}{' with ' + args.wavelet + ' wavelet' if use_wavelet else ' (no wavelet)'}...")
     print(f"Dataset: {len(dataset)} slices")
